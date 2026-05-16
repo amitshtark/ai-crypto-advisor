@@ -1,11 +1,14 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticateToken } from '../middleware/auth.middleware.js';
-import { buildDashboardContent } from '../services/dashboardMock.service.js';
+import {
+  buildDashboardContent,
+  mergeLivePricesWithFallback,
+  getFallbackPricesForAssets,
+} from '../services/dashboardMock.service.js';
 import { fetchLivePrices } from '../services/coinGecko.service.js';
 import { fetchNewsData } from '../services/newsData.service.js';
 import { fetchAIInsight } from '../services/aiInsight.service.js';
-import { fetchCryptoMeme } from '../services/meme.service.js';
 import { fetchChartData, getFallbackChartData } from '../services/coinChart.service.js';
 
 const router = express.Router();
@@ -35,131 +38,36 @@ router.get('/', authenticateToken, async (req, res) => {
     preferences.contentTypes = JSON.parse(preferences.contentTypes);
 
     const personalizedContent = buildDashboardContent(preferences);
-    personalizedContent.priceSource = 'fallback'; // Default until live/cache succeeds
-    personalizedContent.newsSource = 'fallback';  // Default until live/cache succeeds
-    personalizedContent.aiSource = 'fallback';    // Default until live/cache succeeds
-    personalizedContent.memeSource = 'fallback';  // Default until live/cache succeeds
-    personalizedContent.chartSource = 'fallback'; // Default until live/cache succeeds
+    // Fast response: fallback content first; live sections load via separate endpoints on the client
+    personalizedContent.priceSource = 'fallback';
+    personalizedContent.memeSource = preferences.contentTypes.includes('Fun') ? 'fallback' : 'skipped';
 
-    // ── PHASE 1: Run independent API calls in parallel ─────────────────────────
-    // Prices always fetches; news, meme, chart only if user selected them
-    
-    const parallelStartTime = Date.now();
-    
-    const parallelTasks = [
-      // Always fetch prices
-      (async () => {
-        const taskStart = Date.now();
-        try {
-          const liveData = await fetchLivePrices(preferences.assets);
-          if (liveData && liveData.formattedCoins.length > 0) {
-            personalizedContent.coinPrices = liveData.formattedCoins;
-            personalizedContent.priceSource = liveData.source;
-            personalizedContent.priceUpdatedAt = liveData.timestamp;
-          }
-          const duration = Date.now() - taskStart;
-          console.log(`[dashboard] section=prices source=${personalizedContent.priceSource} duration=${duration}ms`);
-        } catch (err) {
-          const duration = Date.now() - taskStart;
-          console.warn(`⚠️ [dashboard] section=prices source=fallback duration=${duration}ms | error: ${err.message}`);
-          personalizedContent.priceError = 'Live prices unavailable, showing demo data.';
-        }
-      })(),
-    ];
-
-    // Fetch news only if selected
     if (preferences.contentTypes.includes('Market News')) {
-      parallelTasks.push(
-        (async () => {
-          const taskStart = Date.now();
-          try {
-            const newsData = await fetchNewsData(preferences.assets);
-            if (newsData && newsData.formattedNews.length > 0) {
-              personalizedContent.marketNews = newsData.formattedNews;
-              personalizedContent.newsSource = newsData.source;
-              personalizedContent.newsUpdatedAt = newsData.timestamp;
-            }
-            const duration = Date.now() - taskStart;
-            console.log(`[dashboard] section=news source=${personalizedContent.newsSource} duration=${duration}ms`);
-          } catch (err) {
-            const duration = Date.now() - taskStart;
-            console.warn(`⚠️ [dashboard] section=news source=fallback duration=${duration}ms | error: ${err.message}`);
-            personalizedContent.newsError = 'Live news unavailable, showing demo news.';
-          }
-        })()
-      );
+      personalizedContent.newsSource = 'pending';
     } else {
       personalizedContent.newsSource = 'skipped';
       delete personalizedContent.marketNews;
       delete personalizedContent.newsError;
-      console.log(`[dashboard] section=news source=skipped duration=0ms`);
     }
 
-    // Fetch meme only if selected
-    if (preferences.contentTypes.includes('Fun')) {
-      parallelTasks.push(
-        (async () => {
-          const taskStart = Date.now();
-          try {
-            const memeData = await fetchCryptoMeme();
-            personalizedContent.meme = memeData.meme;
-            personalizedContent.memeSource = memeData.source;
-            personalizedContent.memeUpdatedAt = memeData.timestamp;
-            const duration = Date.now() - taskStart;
-            console.log(`[dashboard] section=meme source=${personalizedContent.memeSource} duration=${duration}ms`);
-          } catch (err) {
-            const duration = Date.now() - taskStart;
-            console.warn(`⚠️ [dashboard] section=meme source=fallback duration=${duration}ms | error: ${err.message}`);
-            personalizedContent.memeError = 'Live crypto meme unavailable, showing demo crypto meme.';
-          }
-        })()
-      );
-    } else {
+    if (!preferences.contentTypes.includes('Fun')) {
       personalizedContent.memeSource = 'skipped';
       delete personalizedContent.meme;
       delete personalizedContent.memeError;
-      console.log(`[dashboard] section=meme source=skipped duration=0ms`);
     }
 
-    // Fetch chart only if selected
     if (preferences.contentTypes.includes('Charts') && preferences.assets.length > 0) {
       const selectedChartAsset = preferences.assets[0];
-      parallelTasks.push(
-        (async () => {
-          const taskStart = Date.now();
-          try {
-            const chartDataResponse = await fetchChartData(selectedChartAsset);
-            personalizedContent.chartData = chartDataResponse.chartData;
-            personalizedContent.chartSource = chartDataResponse.source;
-            personalizedContent.chartUpdatedAt = chartDataResponse.timestamp;
-            personalizedContent.selectedChartAsset = selectedChartAsset;
-            const duration = Date.now() - taskStart;
-            console.log(`[dashboard] section=chart source=${personalizedContent.chartSource} duration=${duration}ms`);
-          } catch (err) {
-            const duration = Date.now() - taskStart;
-            console.warn(`⚠️ [dashboard] section=chart source=fallback duration=${duration}ms | error: ${err.message}`);
-            const fallback = getFallbackChartData(selectedChartAsset);
-            personalizedContent.chartData = fallback.chartData;
-            personalizedContent.chartSource = fallback.source;
-            personalizedContent.chartUpdatedAt = fallback.timestamp;
-            personalizedContent.selectedChartAsset = selectedChartAsset;
-            personalizedContent.chartError = 'Live chart unavailable, showing demo chart.';
-          }
-        })()
-      );
+      const fallbackChart = getFallbackChartData(selectedChartAsset);
+      personalizedContent.chartData = fallbackChart.chartData;
+      personalizedContent.chartSource = fallbackChart.source;
+      personalizedContent.chartUpdatedAt = fallbackChart.timestamp;
+      personalizedContent.selectedChartAsset = selectedChartAsset;
     } else {
       personalizedContent.chartSource = 'skipped';
-      console.log(`[dashboard] section=chart source=skipped duration=0ms`);
     }
 
-    // Run all parallel tasks — each handles its own error
-    await Promise.allSettled(parallelTasks);
-    
-    const parallelDuration = Date.now() - parallelStartTime;
-    console.log(`[dashboard] parallel_phase completed in ${parallelDuration}ms`);
-
-    // ── PHASE 2: Fetch AI ONLY if selected (uses prices + news from Phase 1) ──
-    // AI is now fetched separately to avoid blocking the dashboard
+    // AI is fetched separately to avoid blocking the dashboard
     if (preferences.contentTypes.includes('AI Insights')) {
       // Return pending AI immediately — frontend will fetch it separately
       personalizedContent.aiSource = 'pending';
@@ -263,6 +171,67 @@ router.get('/ai', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/dashboard/news
+// Lightweight route — fetches market news separately (non-blocking)
+router.get('/news', authenticateToken, async (req, res) => {
+  const newsStartTime = Date.now();
+
+  try {
+    const preferences = await prisma.preference.findUnique({
+      where: { userId: req.user.id },
+    });
+
+    if (!preferences) {
+      return res.json({
+        newsSource: 'fallback',
+        marketNews: buildDashboardContent(null).marketNews,
+        newsError: 'Preferences not found, showing demo news.',
+      });
+    }
+
+    const assets = JSON.parse(preferences.assets);
+    const contentTypes = JSON.parse(preferences.contentTypes);
+
+    if (!contentTypes.includes('Market News')) {
+      return res.json({
+        newsSource: 'skipped',
+        newsError: 'Market News is not enabled for this user.',
+      });
+    }
+
+    try {
+      const newsData = await fetchNewsData(assets);
+      const duration = Date.now() - newsStartTime;
+      console.log(`[dashboard-news] source=${newsData.source} duration=${duration}ms`);
+
+      res.json({
+        newsSource: newsData.source,
+        marketNews: newsData.formattedNews,
+        newsUpdatedAt: newsData.timestamp,
+      });
+    } catch (err) {
+      const duration = Date.now() - newsStartTime;
+      console.warn(`⚠️ [dashboard-news] source=fallback duration=${duration}ms | error: ${err.message}`);
+
+      const fallbackNews = buildDashboardContent({
+        assets,
+        investorType: preferences.investorType,
+        contentTypes,
+      }).marketNews;
+
+      res.json({
+        newsSource: 'fallback',
+        marketNews: fallbackNews,
+        newsError: 'Live news unavailable, showing demo news.',
+        newsUpdatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.error('News route error:', err);
+    res.status(500).json({ error: 'Failed to fetch market news' });
+  }
+});
+
 // GET /api/dashboard/prices
 // Lightweight route — only fetches coin prices for the user's current assets.
 // Used by the frontend when the user adds or removes a coin so we don't have
@@ -278,22 +247,24 @@ router.get('/prices', authenticateToken, async (req, res) => {
     }
 
     const assets = JSON.parse(preferences.assets);
-    let coinPrices = [];
+    let coinPrices = getFallbackPricesForAssets(assets);
     let priceSource = 'fallback';
     let priceUpdatedAt = null;
+    let priceError = null;
 
     try {
       const liveData = await fetchLivePrices(assets);
-      if (liveData && liveData.formattedCoins.length > 0) {
-        coinPrices = liveData.formattedCoins;
+      coinPrices = mergeLivePricesWithFallback(assets, liveData?.formattedCoins);
+      if (liveData?.formattedCoins?.length > 0) {
         priceSource = liveData.source;
         priceUpdatedAt = liveData.timestamp;
       }
-    } catch {
-      // fallback — return empty so frontend keeps existing mock prices
+    } catch (err) {
+      priceError = 'Live prices unavailable, showing demo data.';
+      console.warn(`⚠️ [dashboard-prices] source=fallback | error: ${err.message}`);
     }
 
-    res.json({ coinPrices, priceSource, priceUpdatedAt, selectedAssets: assets });
+    res.json({ coinPrices, priceSource, priceUpdatedAt, priceError, selectedAssets: assets });
   } catch (err) {
     console.error('Prices route error:', err);
     res.status(500).json({ error: 'Failed to fetch prices' });

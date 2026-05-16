@@ -118,7 +118,6 @@ const ALL_NEWS = [
     summary: 'BTC surged past the $67,000 mark amid strong institutional demand and positive macro signals from the Fed.',
     source: 'CryptoDaily',
     tags: ['Bitcoin'],
-    time: '2h ago',
     sentiment: 'bullish',
   },
   {
@@ -127,7 +126,6 @@ const ALL_NEWS = [
     summary: 'The Dencun hard fork is live, and early data shows dramatically lower transaction costs across major L2s.',
     source: 'The Block',
     tags: ['Ethereum'],
-    time: '4h ago',
     sentiment: 'bullish',
   },
   {
@@ -136,7 +134,6 @@ const ALL_NEWS = [
     summary: 'Solana\'s validator network hit a new all-time high in transactions per second during yesterday\'s peak.',
     source: 'Decrypt',
     tags: ['Solana'],
-    time: '6h ago',
     sentiment: 'bullish',
   },
   {
@@ -145,7 +142,6 @@ const ALL_NEWS = [
     summary: 'DOGE holders are pushing a viral campaign that has already trended on X for 12 hours straight.',
     source: 'CoinTelegraph',
     tags: ['Dogecoin'],
-    time: '8h ago',
     sentiment: 'neutral',
   },
   {
@@ -154,7 +150,6 @@ const ALL_NEWS = [
     summary: 'Input Output Group confirms Hydra is now live, promising near-instant finality and massive scalability.',
     source: 'CryptoSlate',
     tags: ['Cardano'],
-    time: '10h ago',
     sentiment: 'bullish',
   },
   {
@@ -163,7 +158,6 @@ const ALL_NEWS = [
     summary: 'Polygon\'s zkEVM milestone marks a major achievement for zero-knowledge rollup technology.',
     source: 'BeInCrypto',
     tags: ['Polygon'],
-    time: '12h ago',
     sentiment: 'bullish',
   },
   {
@@ -172,7 +166,6 @@ const ALL_NEWS = [
     summary: 'The SEC greenlights several new spot ETF applications, opening doors for broader institutional access.',
     source: 'Bloomberg Crypto',
     tags: ['Bitcoin', 'Ethereum'],
-    time: '1d ago',
     sentiment: 'bullish',
   },
   {
@@ -181,7 +174,6 @@ const ALL_NEWS = [
     summary: 'Total value locked across DeFi protocols climbed to a new high as yield farming rewards attracted capital.',
     source: 'DeFi Pulse',
     tags: ['Ethereum', 'Polygon'],
-    time: '1d ago',
     sentiment: 'bullish',
   },
 ];
@@ -315,6 +307,25 @@ const MEMES = [
 ];
 
 /**
+ * Fallback coin rows for tracked assets (used when CoinGecko is slow/unavailable).
+ */
+export function getFallbackPricesForAssets(assets) {
+  if (!assets || assets.length === 0) return [];
+  return assets.map((a) => ALL_PRICES[a]).filter(Boolean);
+}
+
+/**
+ * Prefer live/cache prices; fill any missing tracked assets with fallback demo rows.
+ */
+export function mergeLivePricesWithFallback(assets, liveFormattedCoins) {
+  if (!assets || assets.length === 0) return [];
+  const fallback = getFallbackPricesForAssets(assets);
+  if (!liveFormattedCoins || liveFormattedCoins.length === 0) return fallback;
+  const liveMap = new Map(liveFormattedCoins.map((c) => [c.name, c]));
+  return assets.map((a) => liveMap.get(a) || ALL_PRICES[a]).filter(Boolean);
+}
+
+/**
  * Build personalized dashboard content based on user preferences.
  */
 export function buildDashboardContent(preferences) {
@@ -322,14 +333,8 @@ export function buildDashboardContent(preferences) {
   const investorType = preferences?.investorType || 'HODLer';
   const contentTypes = preferences?.contentTypes || ['Market News', 'Charts', 'AI Insights'];
 
-  // Coin Prices — prioritize selected assets, then add others
-  const priorityCoins = assets
-    .map((a) => ALL_PRICES[a])
-    .filter(Boolean);
-  const otherCoins = Object.values(ALL_PRICES).filter(
-    (c) => !assets.includes(c.name)
-  );
-  const coinPrices = priorityCoins;
+  // Coin Prices — only the user's tracked assets
+  const coinPrices = getFallbackPricesForAssets(assets);
 
   // Market News — prioritize news tagged with selected assets
   const priorityNews = ALL_NEWS.filter((n) =>

@@ -1,8 +1,44 @@
 import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
+const API_URL = 'http://localhost:5001/api';
+
+function assertSameAssets(actual, expected, label) {
+  const a = [...(actual || [])].sort();
+  const e = [...expected].sort();
+  if (JSON.stringify(a) !== JSON.stringify(e)) {
+    throw new Error(`${label}: expected [${e.join(', ')}] but got [${a.join(', ')}]`);
+  }
+}
+
+function getTrackedAssets(dashboard) {
+  return dashboard.meta?.selectedAssets || [];
+}
+
+function getCoinNames(dashboard) {
+  return (dashboard.coinPrices || []).map((c) => c.name);
+}
+
+async function fetchDashboard(token) {
+  const res = await fetch(`${API_URL}/dashboard`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error('Dashboard failed: ' + JSON.stringify(data));
+  return data;
+}
+
+async function updateAssets(token, assets) {
+  const res = await fetch(`${API_URL}/onboarding/preferences/assets`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ assets }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error('Update assets failed: ' + JSON.stringify(data));
+  return data;
+}
 
 async function runTests() {
-  const API_URL = 'http://localhost:5001/api';
   let token = '';
   let testUserEmail = `test${Date.now()}@example.com`;
 
@@ -76,7 +112,7 @@ async function runTests() {
     if (!data.chartSource) throw new Error('Dashboard missing chartSource field');
 
     // Verify newsSource is one of the expected values
-    const validSources = ['live', 'cache', 'fallback', 'skipped'];
+    const validSources = ['live', 'cache', 'fallback', 'skipped', 'pending'];
     if (!validSources.includes(data.newsSource)) {
       throw new Error(`newsSource has unexpected value: ${data.newsSource}`);
     }
@@ -278,19 +314,46 @@ async function runTests() {
     if (!res.ok) throw new Error('Feedback failed: ' + JSON.stringify(data));
     console.log('   ✅ Feedback submitted successfully');
 
-    // 7. PUT /api/onboarding/preferences/assets
-    console.log('7. Testing PUT /api/onboarding/preferences/assets...');
-    res = await fetch(`${API_URL}/onboarding/preferences/assets`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({
-        assets: ['Bitcoin', 'Ethereum', 'Solana']
-      })
+    // 7. Market Overview — asset add/remove persistence
+    console.log('7. Testing Market Overview asset updates...');
+    let dashboard = await fetchDashboard(token);
+    assertSameAssets(getTrackedAssets(dashboard), ['Bitcoin', 'Ethereum'], 'after onboarding');
+    assertSameAssets(getCoinNames(dashboard), ['Bitcoin', 'Ethereum'], 'dashboard coins after onboarding');
+
+    await updateAssets(token, ['Bitcoin']);
+    dashboard = await fetchDashboard(token);
+    assertSameAssets(getTrackedAssets(dashboard), ['Bitcoin'], 'after remove Ethereum');
+    assertSameAssets(getCoinNames(dashboard), ['Bitcoin'], 'dashboard coins after remove Ethereum');
+
+    const pricesRes = await fetch(`${API_URL}/dashboard/prices`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
-    data = await res.json();
-    if (!res.ok) throw new Error('Update assets failed: ' + JSON.stringify(data));
-    if (!data.preferences.assets.includes('Solana')) throw new Error('Solana not added');
-    console.log('   ✅ Update assets successful');
+    const pricesData = await pricesRes.json();
+    if (!pricesRes.ok) throw new Error('Prices failed: ' + JSON.stringify(pricesData));
+    assertSameAssets(pricesData.selectedAssets, ['Bitcoin'], 'prices selectedAssets');
+    assertSameAssets(
+      (pricesData.coinPrices || []).map((c) => c.name),
+      ['Bitcoin'],
+      'prices endpoint coins'
+    );
+
+    await updateAssets(token, ['Bitcoin', 'Solana']);
+    dashboard = await fetchDashboard(token);
+    assertSameAssets(getTrackedAssets(dashboard), ['Bitcoin', 'Solana'], 'after add Solana');
+    assertSameAssets(getCoinNames(dashboard), ['Bitcoin', 'Solana'], 'dashboard coins after add Solana');
+
+    await updateAssets(token, []);
+    dashboard = await fetchDashboard(token);
+    assertSameAssets(getTrackedAssets(dashboard), [], 'after clear all assets');
+    if ((dashboard.coinPrices || []).length !== 0) {
+      throw new Error('Expected empty coinPrices when no assets tracked');
+    }
+
+    await updateAssets(token, ['Cardano']);
+    dashboard = await fetchDashboard(token);
+    assertSameAssets(getTrackedAssets(dashboard), ['Cardano'], 'after set Cardano only');
+    assertSameAssets(getCoinNames(dashboard), ['Cardano'], 'dashboard coins Cardano only');
+    console.log('   ✅ Market Overview asset updates passed');
 
     // 8. Verify Database via Prisma
     console.log('8. Verifying data in Database via Prisma...');
@@ -298,7 +361,8 @@ async function runTests() {
     if (!user || !user.hasOnboarded) throw new Error('User onboarded flag not set in DB');
     
     const pref = await prisma.preference.findUnique({ where: { userId: user.id } });
-    if (!pref || !pref.assets.includes('Solana')) throw new Error('Preferences not properly saved in DB');
+    const savedAssets = JSON.parse(pref.assets);
+    assertSameAssets(savedAssets, ['Cardano'], 'DB preference assets');
     
     const feedback = await prisma.feedback.findFirst({ where: { userId: user.id } });
     if (!feedback || feedback.vote !== 'up') throw new Error('Feedback not properly saved in DB');

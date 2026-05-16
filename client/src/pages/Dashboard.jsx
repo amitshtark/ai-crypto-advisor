@@ -1,9 +1,41 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/api';
 import DashboardCard from '../components/DashboardCard';
 import { LogOut, User, Plus, Trash2, Edit2, Check } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+
+function formatNewsTime(publishedAt) {
+  if (!publishedAt) return null;
+  const date = new Date(publishedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return null;
+  const diffMins = Math.floor(diffMs / 60_000);
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return `${Math.floor(diffHours / 24)}d ago`;
+}
+
+function CardSkeleton({ lines = 3 }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.5rem 0' }} role="status" aria-label="Loading">
+      {Array.from({ length: lines }).map((_, i) => (
+        <div
+          key={i}
+          style={{
+            height: i === 0 ? 18 : 14,
+            borderRadius: 4,
+            backgroundColor: 'var(--border)',
+            opacity: 0.45,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 
 const ALL_AVAILABLE_COINS = [
   'Bitcoin', 'Ethereum', 'Solana', 'Dogecoin', 'Cardano', 
@@ -20,6 +52,12 @@ export default function Dashboard() {
   const [savingCoins, setSavingCoins] = useState(false);
   const [selectedCoinToAdd, setSelectedCoinToAdd] = useState('');
   const [chartLoading, setChartLoading] = useState(false);
+  const [sectionLoading, setSectionLoading] = useState({
+    prices: false,
+    news: false,
+    chart: false,
+  });
+  const sectionsHydratedRef = useRef(false);
 
   const fetchDashboard = async () => {
     try {
@@ -61,7 +99,84 @@ export default function Dashboard() {
     if (data && data.meta?.contentTypes?.includes('AI Insights') && data.aiSource === 'pending') {
       fetchAIInsight();
     }
-  }, [data?.meta?.contentTypes]);
+  }, [data?.aiSource, data?.meta?.contentTypes]);
+
+  // Hydrate live sections in the background (non-blocking)
+  useEffect(() => {
+    if (!data?.meta || sectionsHydratedRef.current) return;
+    sectionsHydratedRef.current = true;
+
+    const contentTypes = data.meta.contentTypes || [];
+    const assets = data.meta.selectedAssets || [];
+
+    const hydratePrices = async () => {
+      setSectionLoading((s) => ({ ...s, prices: true }));
+      try {
+        const priceData = await api.getPrices();
+        setData((prev) => ({
+          ...prev,
+          coinPrices: priceData.coinPrices ?? prev.coinPrices,
+          priceSource: priceData.priceSource ?? prev.priceSource,
+          priceUpdatedAt: priceData.priceUpdatedAt,
+          priceError: priceData.priceError ?? null,
+          meta: { ...prev.meta, selectedAssets: priceData.selectedAssets ?? prev.meta?.selectedAssets },
+        }));
+      } catch (err) {
+        console.error('Failed to refresh prices:', err);
+      } finally {
+        setSectionLoading((s) => ({ ...s, prices: false }));
+      }
+    };
+
+    const hydrateNews = async () => {
+      if (!contentTypes.includes('Market News')) return;
+      setSectionLoading((s) => ({ ...s, news: true }));
+      try {
+        const newsData = await api.getNews();
+        setData((prev) => ({
+          ...prev,
+          marketNews: newsData.marketNews ?? prev.marketNews,
+          newsSource: newsData.newsSource ?? prev.newsSource,
+          newsUpdatedAt: newsData.newsUpdatedAt,
+          newsError: newsData.newsError ?? null,
+        }));
+      } catch (err) {
+        console.error('Failed to fetch market news:', err);
+        setData((prev) => ({
+          ...prev,
+          newsSource: 'fallback',
+          newsError: 'Live news unavailable, showing demo news.',
+        }));
+      } finally {
+        setSectionLoading((s) => ({ ...s, news: false }));
+      }
+    };
+
+    const hydrateChart = async () => {
+      if (!contentTypes.includes('Charts') || assets.length === 0) return;
+      const asset = data.selectedChartAsset || assets[0];
+      setSectionLoading((s) => ({ ...s, chart: true }));
+      try {
+        const chartRes = await api.getChart(asset);
+        setData((prev) => ({
+          ...prev,
+          selectedChartAsset: chartRes.selectedAsset,
+          chartData: chartRes.chartData,
+          chartSource: chartRes.chartSource,
+          chartUpdatedAt: chartRes.chartUpdatedAt,
+          chartError: chartRes.chartError,
+        }));
+      } catch (err) {
+        console.error('Failed to refresh chart:', err);
+      } finally {
+        setSectionLoading((s) => ({ ...s, chart: false }));
+      }
+    };
+
+    hydratePrices();
+    hydrateNews();
+    hydrateChart();
+  }, [data]);
 
   const [toast, setToast] = useState('');
 
@@ -70,24 +185,30 @@ export default function Dashboard() {
     setTimeout(() => setToast(''), 3000);
   };
 
+  const applyAssetUpdate = async (newAssets) => {
+    const result = await api.updateAssets(newAssets);
+    const savedAssets = result.preferences?.assets ?? newAssets;
+    const priceData = await api.getPrices();
+    setData((prev) => ({
+      ...prev,
+      coinPrices: priceData.coinPrices ?? [],
+      priceSource: priceData.priceSource ?? 'fallback',
+      priceUpdatedAt: priceData.priceUpdatedAt,
+      priceError: priceData.priceError ?? null,
+      meta: { ...prev.meta, selectedAssets: savedAssets },
+    }));
+    return savedAssets;
+  };
+
   const handleAddCoin = async () => {
     if (!selectedCoinToAdd) return;
-    const currentAssets = data.meta.selectedAssets;
+    const currentAssets = data.meta?.selectedAssets ?? [];
     if (currentAssets.includes(selectedCoinToAdd)) return;
 
+    const newAssets = [...currentAssets, selectedCoinToAdd];
     setSavingCoins(true);
     try {
-      const newAssets = [...currentAssets, selectedCoinToAdd];
-      await api.updateAssets(newAssets);
-      // Only refresh prices — not the full dashboard (avoids slow AI/news/meme reload)
-      const priceData = await api.getPrices();
-      setData(prev => ({
-        ...prev,
-        coinPrices: priceData.coinPrices,
-        priceSource: priceData.priceSource,
-        priceUpdatedAt: priceData.priceUpdatedAt,
-        meta: { ...prev.meta, selectedAssets: priceData.selectedAssets },
-      }));
+      await applyAssetUpdate(newAssets);
       setSelectedCoinToAdd('');
       showToast(`Added ${selectedCoinToAdd}`);
     } catch (err) {
@@ -99,25 +220,12 @@ export default function Dashboard() {
   };
 
   const handleRemoveCoin = async (coinName) => {
-    const currentAssets = data.meta.selectedAssets;
-    if (currentAssets.length <= 1) {
-      showToast('Keep at least one coin tracked');
-      return;
-    }
-    const newAssets = currentAssets.filter(a => a !== coinName);
+    const currentAssets = data.meta?.selectedAssets ?? [];
+    const newAssets = currentAssets.filter((a) => a !== coinName);
 
     setSavingCoins(true);
     try {
-      await api.updateAssets(newAssets);
-      // Only refresh prices — not the full dashboard
-      const priceData = await api.getPrices();
-      setData(prev => ({
-        ...prev,
-        coinPrices: priceData.coinPrices,
-        priceSource: priceData.priceSource,
-        priceUpdatedAt: priceData.priceUpdatedAt,
-        meta: { ...prev.meta, selectedAssets: priceData.selectedAssets },
-      }));
+      await applyAssetUpdate(newAssets);
       showToast(`Removed ${coinName}`);
     } catch (err) {
       console.error(err);
@@ -150,11 +258,44 @@ export default function Dashboard() {
     }
   };
 
-  if (loading && !data) return <div className="flex-center min-h-screen">Loading your personalized view...</div>;
-  if (error) return <div className="flex-center min-h-screen"><div className="card text-center" style={{color: 'var(--danger)'}}>{error}</div></div>;
+  if (error) {
+    return (
+      <div className="flex-center min-h-screen">
+        <div className="card text-center" style={{ color: 'var(--danger)' }}>{error}</div>
+      </div>
+    );
+  }
+
+  if (loading && !data) {
+    return (
+      <div className="container" style={{ paddingTop: '2rem', paddingBottom: '3rem' }}>
+        <header style={{ marginBottom: '2rem' }}>
+          <h1 style={{ margin: 0, fontSize: '1.8rem' }}>
+            <span style={{ color: 'var(--primary)' }}>AI</span> Crypto Advisor
+          </h1>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>
+            Welcome back{user?.name ? `, ${user.name}` : ''}…
+          </p>
+        </header>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
+          {[1, 2, 3].map((n) => (
+            <div key={n} className="card" style={{ minHeight: 340, padding: '1.25rem' }}>
+              <CardSkeleton lines={4} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (!data) return null;
 
-  const availableToAdd = ALL_AVAILABLE_COINS.filter(c => !data.meta.selectedAssets.includes(c));
+  const selectedAssets = data.meta?.selectedAssets ?? [];
+  const priceByName = new Map((data.coinPrices || []).map((c) => [c.name, c]));
+  const displayCoins = selectedAssets
+    .map((name) => priceByName.get(name))
+    .filter(Boolean);
+  const availableToAdd = ALL_AVAILABLE_COINS.filter((c) => !selectedAssets.includes(c));
 
   const contentTypes = data.meta.contentTypes || [];
   const showCharts = contentTypes.includes('Charts');
@@ -211,7 +352,7 @@ export default function Dashboard() {
                 display: 'inline-block',
                 width: 'fit-content'
               }}>
-                {data.priceSource === 'live' ? 'Live prices' : data.priceSource === 'cache' ? 'Cached live prices' : 'Fallback demo prices'}
+                {sectionLoading.prices ? 'Updating prices…' : data.priceSource === 'live' ? 'Live prices' : data.priceSource === 'cache' ? 'Cached live prices' : 'Fallback demo prices'}
               </span>
               {data.priceError && <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.priceError}</span>}
             </div>
@@ -257,12 +398,12 @@ export default function Dashboard() {
             overflowY: 'auto',
             paddingRight: '4px',  /* prevent scrollbar overlap */
           }}>
-            {data.coinPrices.length === 0 ? (
+            {selectedAssets.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)' }}>
                 No coins tracked. Click Edit to add some!
               </div>
             ) : (
-              data.coinPrices.map(coin => (
+              displayCoins.map(coin => (
                 <div key={coin.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', backgroundColor: 'var(--bg-dark)', borderRadius: '0.5rem', flexShrink: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     {editMode && (
@@ -328,7 +469,7 @@ export default function Dashboard() {
                     cursor: chartLoading ? 'wait' : 'pointer'
                   }}
                 >
-                  {data.meta.selectedAssets.map(asset => (
+                  {selectedAssets.map(asset => (
                     <option key={asset} value={asset}>{asset}</option>
                   ))}
                 </select>
@@ -408,7 +549,7 @@ export default function Dashboard() {
                   color: data.aiSource === 'live' ? 'var(--success)' : data.aiSource === 'cache' ? '#3b82f6' : 'var(--danger)',
                   display: 'inline-block',
                 }}>
-                  {data.aiSource === 'live' ? 'Live AI insight' : data.aiSource === 'cache' ? 'Cached AI insight' : 'Fallback demo insight'}
+                  {data.aiSource === 'live' ? 'Live AI insight' : data.aiSource === 'cache' ? 'Cached AI insight' : data.aiSource === 'pending' ? 'Loading AI insight…' : 'Fallback demo insight'}
                 </span>
                 {data.aiError && (
                   <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.aiError}</span>
@@ -428,29 +569,36 @@ export default function Dashboard() {
 
         {/* Market News */}
         {showNews && (
-          <DashboardCard title="Curated News" section="market_news">
+          <DashboardCard title="Market News" section="market_news">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                 <span style={{ 
                   fontSize: '0.7rem', 
                   padding: '0.15rem 0.4rem', 
                   borderRadius: '0.25rem', 
-                  backgroundColor: data.newsSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.newsSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                  color: data.newsSource === 'live' ? 'var(--success)' : data.newsSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                  backgroundColor: data.newsSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.newsSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : data.newsSource === 'pending' ? 'rgba(148, 163, 184, 0.15)' : 'rgba(239, 68, 68, 0.1)',
+                  color: data.newsSource === 'live' ? 'var(--success)' : data.newsSource === 'cache' ? '#3b82f6' : data.newsSource === 'pending' ? 'var(--text-muted)' : 'var(--danger)',
                   display: 'inline-block',
                   width: 'fit-content'
                 }}>
-                  {data.newsSource === 'live' ? 'Live news' : data.newsSource === 'cache' ? 'Cached live news' : 'Fallback demo news'}
+                  {data.newsSource === 'live' ? 'Live news' : data.newsSource === 'cache' ? 'Cached live news' : data.newsSource === 'pending' ? 'Loading news…' : 'Fallback demo news'}
                 </span>
                 {data.newsError && <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.newsError}</span>}
               </div>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {data.marketNews?.slice(0, 3).map(news => (
-                <div key={news.id} style={{ borderBottom: '1px solid var(--border)', paddingBottom: '1rem', lastChild: { borderBottom: 'none', paddingBottom: 0 } }}>
+            {sectionLoading.news && (!data.marketNews || data.marketNews.length === 0) ? (
+              <CardSkeleton lines={4} />
+            ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', opacity: sectionLoading.news ? 0.7 : 1 }}>
+              {data.marketNews?.slice(0, 3).map((news) => {
+                const timeLabel = formatNewsTime(news.publishedAt);
+                return (
+                <div key={news.id} style={{ borderBottom: '1px solid var(--border)', paddingBottom: '1rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
                     <span style={{ fontSize: '0.75rem', color: 'var(--primary)', fontWeight: '600' }}>{news.source}</span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{news.time}</span>
+                    {timeLabel && (
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{timeLabel}</span>
+                    )}
                   </div>
                   <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1rem' }}>
                     {news.url ? (
@@ -465,8 +613,10 @@ export default function Dashboard() {
                     {news.summary}
                   </p>
                 </div>
-              ))}
+                );
+              })}
             </div>
+            )}
           </DashboardCard>
         )}
 

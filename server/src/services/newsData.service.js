@@ -40,26 +40,19 @@ function buildQuery(assets) {
 }
 
 /**
- * Convert a NewsData.io pubDate string ("2024-01-15 12:30:00" UTC) to a
- * relative time string like "2h ago".
+ * Parse NewsData.io pubDate ("2024-01-15 12:30:00" UTC) to ISO string.
  */
-function formatRelativeTime(pubDateStr) {
-  if (!pubDateStr) return 'Unknown';
+export function parsePublishedAt(pubDateStr) {
+  if (!pubDateStr) return null;
   try {
-    const normalised = pubDateStr.replace(' ', 'T') + (pubDateStr.includes('T') ? '' : 'Z');
+    const normalised = pubDateStr.includes('T')
+      ? pubDateStr
+      : `${pubDateStr.replace(' ', 'T')}Z`;
     const date = new Date(normalised);
-    if (isNaN(date.getTime())) return 'Unknown';
-
-    const diffMs = Date.now() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60_000);
-    if (diffMins < 1)   return 'Just now';
-    if (diffMins < 60)  return `${diffMins}m ago`;
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    const diffDays = Math.floor(diffHours / 24);
-    return `${diffDays}d ago`;
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
   } catch {
-    return 'Unknown';
+    return null;
   }
 }
 
@@ -135,7 +128,7 @@ export async function fetchNewsData(assets) {
       summary: article.description ?? '',
       source: article.source_name ?? article.source_id ?? 'NewsData',
       url: article.link ?? null,
-      time: formatRelativeTime(article.pubDate),
+      publishedAt: parsePublishedAt(article.pubDate),
       tags: article.keywords ?? [],
       sentiment: 'neutral',
     }));
@@ -143,8 +136,8 @@ export async function fetchNewsData(assets) {
   // Save to cache
   newsCache[cacheKey] = { timestamp: now, formattedNews };
 
-  const newestTime = formattedNews[0]?.time ?? 'unknown';
-  console.log(`[NewsData] Fetched ${formattedNews.length} crypto articles | newest: ${newestTime}${query ? ` | query: "${query}"` : ''}`);
+  const newestAt = formattedNews[0]?.publishedAt ?? 'unknown';
+  console.log(`[NewsData] Fetched ${formattedNews.length} crypto articles | newest: ${newestAt}${query ? ` | query: "${query}"` : ''}`);
 
   return {
     source: 'live',
