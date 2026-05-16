@@ -61,10 +61,10 @@ export default function Dashboard() {
   const sectionsHydratedRef = useRef(false);
   
   // Retry tracking: { section: { count, timerId } }
-  const retryCountersRef = useRef({ news: 0, ai: 0, chart: 0, meme: 0 });
-  const retryTimersRef = useRef({ news: null, ai: null, chart: null, meme: null });
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 30000; // 30 seconds
+  const retryCountersRef = useRef({ prices: 0, news: 0, ai: 0, chart: 0, meme: 0 });
+  const retryTimersRef = useRef({ prices: null, news: null, ai: null, chart: null, meme: null });
+  const MAX_RETRY_ATTEMPTS = 4;
+  const RETRY_DELAY_MS = 10000; // 10 seconds
 
   const fetchDashboard = async () => {
     try {
@@ -86,6 +86,41 @@ export default function Dashboard() {
       });
     };
   }, []);
+
+  // Retry handler for Prices
+  const fetchPricesWithRetry = async () => {
+    try {
+      const priceData = await api.getPrices();
+      setData((prev) => ({
+        ...prev,
+        coinPrices: priceData.coinPrices ?? prev.coinPrices,
+        priceSource: priceData.priceSource ?? prev.priceSource,
+        priceUpdatedAt: priceData.priceUpdatedAt,
+        priceError: priceData.priceError ?? null,
+        meta: { ...prev.meta, selectedAssets: priceData.selectedAssets ?? prev.meta?.selectedAssets },
+      }));
+      // Reset retry counter on success
+      if (priceData.priceSource === 'live' || priceData.priceSource === 'cache') {
+        retryCountersRef.current.prices = 0;
+      } else if (priceData.priceSource === 'fallback') {
+        schedulePricesRetry();
+      }
+    } catch (err) {
+      console.error('Failed to refresh prices:', err);
+      schedulePricesRetry();
+    }
+  };
+
+  const schedulePricesRetry = () => {
+    if (retryCountersRef.current.prices >= MAX_RETRY_ATTEMPTS) return;
+    if (retryTimersRef.current.prices) clearTimeout(retryTimersRef.current.prices);
+    
+    retryCountersRef.current.prices += 1;
+    retryTimersRef.current.prices = setTimeout(() => {
+      console.log(`[Retry] Prices attempt ${retryCountersRef.current.prices}/${MAX_RETRY_ATTEMPTS}`);
+      fetchPricesWithRetry();
+    }, RETRY_DELAY_MS);
+  };
 
   // Fetch AI insight separately (non-blocking) if selected
   const fetchAIInsight = async () => {
@@ -112,12 +147,12 @@ export default function Dashboard() {
 
   // Retry handler for AI — retries only the AI endpoint
   const scheduleAIRetry = () => {
-    if (retryCountersRef.current.ai >= MAX_RETRIES) return;
+    if (retryCountersRef.current.ai >= MAX_RETRY_ATTEMPTS) return;
     if (retryTimersRef.current.ai) clearTimeout(retryTimersRef.current.ai);
     
     retryCountersRef.current.ai += 1;
     retryTimersRef.current.ai = setTimeout(() => {
-      console.log(`[Retry] AI attempt ${retryCountersRef.current.ai}/${MAX_RETRIES}`);
+      console.log(`[Retry] AI attempt ${retryCountersRef.current.ai}/${MAX_RETRY_ATTEMPTS}`);
       fetchAIInsight();
     }, RETRY_DELAY_MS);
   };
@@ -148,12 +183,12 @@ export default function Dashboard() {
   };
 
   const scheduleNewsRetry = () => {
-    if (retryCountersRef.current.news >= MAX_RETRIES) return;
+    if (retryCountersRef.current.news >= MAX_RETRY_ATTEMPTS) return;
     if (retryTimersRef.current.news) clearTimeout(retryTimersRef.current.news);
     
     retryCountersRef.current.news += 1;
     retryTimersRef.current.news = setTimeout(() => {
-      console.log(`[Retry] News attempt ${retryCountersRef.current.news}/${MAX_RETRIES}`);
+      console.log(`[Retry] News attempt ${retryCountersRef.current.news}/${MAX_RETRY_ATTEMPTS}`);
       fetchNewsWithRetry();
     }, RETRY_DELAY_MS);
   };
@@ -183,12 +218,12 @@ export default function Dashboard() {
   };
 
   const scheduleChartRetry = (asset) => {
-    if (retryCountersRef.current.chart >= MAX_RETRIES) return;
+    if (retryCountersRef.current.chart >= MAX_RETRY_ATTEMPTS) return;
     if (retryTimersRef.current.chart) clearTimeout(retryTimersRef.current.chart);
     
     retryCountersRef.current.chart += 1;
     retryTimersRef.current.chart = setTimeout(() => {
-      console.log(`[Retry] Chart attempt ${retryCountersRef.current.chart}/${MAX_RETRIES}`);
+      console.log(`[Retry] Chart attempt ${retryCountersRef.current.chart}/${MAX_RETRY_ATTEMPTS}`);
       fetchChartWithRetry(asset);
     }, RETRY_DELAY_MS);
   };
@@ -219,12 +254,12 @@ export default function Dashboard() {
   };
 
   const scheduleMemeRetry = () => {
-    if (retryCountersRef.current.meme >= MAX_RETRIES) return;
+    if (retryCountersRef.current.meme >= MAX_RETRY_ATTEMPTS) return;
     if (retryTimersRef.current.meme) clearTimeout(retryTimersRef.current.meme);
     
     retryCountersRef.current.meme += 1;
     retryTimersRef.current.meme = setTimeout(() => {
-      console.log(`[Retry] Meme attempt ${retryCountersRef.current.meme}/${MAX_RETRIES}`);
+      console.log(`[Retry] Meme attempt ${retryCountersRef.current.meme}/${MAX_RETRY_ATTEMPTS}`);
       fetchMemeWithRetry();
     }, RETRY_DELAY_MS);
   };
@@ -247,6 +282,13 @@ export default function Dashboard() {
     }
   }, [data?.aiSource]);
 
+  // Schedule retry for Prices if it's fallback
+  useEffect(() => {
+    if (data?.priceSource === 'fallback') {
+      schedulePricesRetry();
+    }
+  }, [data?.priceSource]);
+
   // Hydrate live sections in the background (non-blocking)
   useEffect(() => {
     if (!data?.meta || sectionsHydratedRef.current) return;
@@ -258,15 +300,7 @@ export default function Dashboard() {
     const hydratePrices = async () => {
       setSectionLoading((s) => ({ ...s, prices: true }));
       try {
-        const priceData = await api.getPrices();
-        setData((prev) => ({
-          ...prev,
-          coinPrices: priceData.coinPrices ?? prev.coinPrices,
-          priceSource: priceData.priceSource ?? prev.priceSource,
-          priceUpdatedAt: priceData.priceUpdatedAt,
-          priceError: priceData.priceError ?? null,
-          meta: { ...prev.meta, selectedAssets: priceData.selectedAssets ?? prev.meta?.selectedAssets },
-        }));
+        await fetchPricesWithRetry();
       } catch (err) {
         console.error('Failed to refresh prices:', err);
       } finally {
@@ -321,6 +355,7 @@ export default function Dashboard() {
   const applyAssetUpdate = async (newAssets) => {
     const result = await api.updateAssets(newAssets);
     const savedAssets = result.preferences?.assets ?? newAssets;
+    retryCountersRef.current.prices = 0; // Reset prices retry counter for new assets
     const priceData = await api.getPrices();
     setData((prev) => ({
       ...prev,
