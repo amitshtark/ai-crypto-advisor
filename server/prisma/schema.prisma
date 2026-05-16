@@ -1,0 +1,46 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  name         String
+  passwordHash String
+  hasOnboarded Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+
+  preference   Preference?
+  feedbacks    Feedback[]
+}
+
+model Preference {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  assets       String   // stored as String
+  investorType String
+  contentTypes String   // stored as String
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  userId    String
+  section   String   // market_news | coin_prices | ai_insight | meme
+  itemId    String?
+  vote      String   // up | down
+  metadata  String?  // stored as String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

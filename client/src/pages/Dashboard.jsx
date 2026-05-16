@@ -1,0 +1,566 @@
+import { useEffect, useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { api } from '../api/api';
+import DashboardCard from '../components/DashboardCard';
+import { LogOut, User, Plus, Trash2, Edit2, Check } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+
+const ALL_AVAILABLE_COINS = [
+  'Bitcoin', 'Ethereum', 'Solana', 'Dogecoin', 'Cardano', 
+  'Polygon', 'Binance Coin', 'XRP', 'Litecoin', 'Avalanche'
+];
+
+export default function Dashboard() {
+  const { user, logout } = useAuth();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  
+  const [editMode, setEditMode] = useState(false);
+  const [savingCoins, setSavingCoins] = useState(false);
+  const [selectedCoinToAdd, setSelectedCoinToAdd] = useState('');
+  const [chartLoading, setChartLoading] = useState(false);
+
+  const fetchDashboard = async () => {
+    try {
+      const dashboardData = await api.getDashboard();
+      setData(dashboardData);
+    } catch (err) {
+      console.error(err);
+      setError('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch AI insight separately (non-blocking) if selected
+  const fetchAIInsight = async () => {
+    if (!data || !data.meta?.contentTypes?.includes('AI Insights')) return;
+
+    try {
+      const aiData = await api.getAIInsight();
+      setData((prev) => ({
+        ...prev,
+        aiSource: aiData.aiSource,
+        aiInsight: aiData.aiInsight,
+        aiUpdatedAt: aiData.aiUpdatedAt,
+        aiError: aiData.aiError,
+      }));
+    } catch (err) {
+      console.error('Failed to fetch AI insight:', err);
+      // Keep the pending state if fetch fails
+    }
+  };
+
+  useEffect(() => {
+    fetchDashboard();
+  }, []);
+
+  // Fetch AI in background after dashboard loads
+  useEffect(() => {
+    if (data && data.meta?.contentTypes?.includes('AI Insights') && data.aiSource === 'pending') {
+      fetchAIInsight();
+    }
+  }, [data?.meta?.contentTypes]);
+
+  const [toast, setToast] = useState('');
+
+  const showToast = (message) => {
+    setToast(message);
+    setTimeout(() => setToast(''), 3000);
+  };
+
+  const handleAddCoin = async () => {
+    if (!selectedCoinToAdd) return;
+    const currentAssets = data.meta.selectedAssets;
+    if (currentAssets.includes(selectedCoinToAdd)) return;
+
+    setSavingCoins(true);
+    try {
+      const newAssets = [...currentAssets, selectedCoinToAdd];
+      await api.updateAssets(newAssets);
+      // Only refresh prices — not the full dashboard (avoids slow AI/news/meme reload)
+      const priceData = await api.getPrices();
+      setData(prev => ({
+        ...prev,
+        coinPrices: priceData.coinPrices,
+        priceSource: priceData.priceSource,
+        priceUpdatedAt: priceData.priceUpdatedAt,
+        meta: { ...prev.meta, selectedAssets: priceData.selectedAssets },
+      }));
+      setSelectedCoinToAdd('');
+      showToast(`Added ${selectedCoinToAdd}`);
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to add coin');
+    } finally {
+      setSavingCoins(false);
+    }
+  };
+
+  const handleRemoveCoin = async (coinName) => {
+    const currentAssets = data.meta.selectedAssets;
+    if (currentAssets.length <= 1) {
+      showToast('Keep at least one coin tracked');
+      return;
+    }
+    const newAssets = currentAssets.filter(a => a !== coinName);
+
+    setSavingCoins(true);
+    try {
+      await api.updateAssets(newAssets);
+      // Only refresh prices — not the full dashboard
+      const priceData = await api.getPrices();
+      setData(prev => ({
+        ...prev,
+        coinPrices: priceData.coinPrices,
+        priceSource: priceData.priceSource,
+        priceUpdatedAt: priceData.priceUpdatedAt,
+        meta: { ...prev.meta, selectedAssets: priceData.selectedAssets },
+      }));
+      showToast(`Removed ${coinName}`);
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to remove coin');
+    } finally {
+      setSavingCoins(false);
+    }
+  };
+
+  const handleChartAssetChange = async (e) => {
+    const newAsset = e.target.value;
+    if (newAsset === data.selectedChartAsset) return;
+
+    setChartLoading(true);
+    try {
+      const chartRes = await api.getChart(newAsset);
+      setData(prev => ({
+        ...prev,
+        selectedChartAsset: chartRes.selectedAsset,
+        chartData: chartRes.chartData,
+        chartSource: chartRes.chartSource,
+        chartUpdatedAt: chartRes.chartUpdatedAt,
+        chartError: chartRes.chartError
+      }));
+    } catch (err) {
+      console.error(err);
+      showToast('Failed to fetch chart data');
+    } finally {
+      setChartLoading(false);
+    }
+  };
+
+  if (loading && !data) return <div className="flex-center min-h-screen">Loading your personalized view...</div>;
+  if (error) return <div className="flex-center min-h-screen"><div className="card text-center" style={{color: 'var(--danger)'}}>{error}</div></div>;
+  if (!data) return null;
+
+  const availableToAdd = ALL_AVAILABLE_COINS.filter(c => !data.meta.selectedAssets.includes(c));
+
+  const contentTypes = data.meta.contentTypes || [];
+  const showCharts = contentTypes.includes('Charts');
+  const showAI = contentTypes.includes('AI Insights');
+  const showNews = contentTypes.includes('Market News');
+  const showMeme = contentTypes.includes('Fun');
+  const showNone = !showAI && !showNews && !showMeme && !showCharts;
+
+  return (
+    <div className="container" style={{ paddingTop: '2rem', paddingBottom: '3rem', position: 'relative' }}>
+      
+      {toast && (
+        <div style={{
+          position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
+          backgroundColor: 'var(--primary)', color: 'white', padding: '0.75rem 1.5rem',
+          borderRadius: '2rem', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 1000,
+          fontWeight: 'bold', animation: 'fadein 0.3s'
+        }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Header */}
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: '1.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: 'var(--primary)' }}>AI</span> Crypto Advisor
+          </h1>
+          <p style={{ margin: 0, color: 'var(--text-muted)' }}>Welcome back, {user?.name}</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div className="badge" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+            <User size={14} /> {data.meta?.investorType}
+          </div>
+          <button onClick={logout} className="btn" style={{ padding: '0.5rem', backgroundColor: 'transparent', color: 'var(--text-muted)' }} title="Logout">
+            <LogOut size={20} />
+          </button>
+        </div>
+      </header>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
+        
+        {/* Coin Prices */}
+        <DashboardCard title="Market Overview" section="coin_prices">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Your Tracked Assets</span>
+              <span style={{ 
+                fontSize: '0.7rem', 
+                padding: '0.15rem 0.4rem', 
+                borderRadius: '0.25rem', 
+                backgroundColor: data.priceSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.priceSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                color: data.priceSource === 'live' ? 'var(--success)' : data.priceSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                display: 'inline-block',
+                width: 'fit-content'
+              }}>
+                {data.priceSource === 'live' ? 'Live prices' : data.priceSource === 'cache' ? 'Cached live prices' : 'Fallback demo prices'}
+              </span>
+              {data.priceError && <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.priceError}</span>}
+            </div>
+            <button 
+              onClick={() => setEditMode(!editMode)} 
+              className="btn" 
+              style={{ padding: '0.25rem 0.5rem', fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+              disabled={savingCoins}
+            >
+              {editMode ? <><Check size={14} /> Done</> : <><Edit2 size={14} /> Edit</>}
+            </button>
+          </div>
+
+          {editMode && (
+            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+              <select 
+                className="form-input" 
+                style={{ flex: 1, padding: '0.5rem' }}
+                value={selectedCoinToAdd}
+                onChange={(e) => setSelectedCoinToAdd(e.target.value)}
+                disabled={savingCoins}
+              >
+                <option value="">Select a coin...</option>
+                {availableToAdd.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleAddCoin}
+                disabled={!selectedCoinToAdd || savingCoins}
+                style={{ padding: '0.5rem 1rem' }}
+              >
+                <Plus size={18} />
+              </button>
+            </div>
+          )}
+
+          {/* Scrollable coin list — shows ~5 coins, scroll for more */}
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '0.75rem',
+            maxHeight: '340px',
+            overflowY: 'auto',
+            paddingRight: '4px',  /* prevent scrollbar overlap */
+          }}>
+            {data.coinPrices.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '1rem', color: 'var(--text-muted)' }}>
+                No coins tracked. Click Edit to add some!
+              </div>
+            ) : (
+              data.coinPrices.map(coin => (
+                <div key={coin.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', backgroundColor: 'var(--bg-dark)', borderRadius: '0.5rem', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    {editMode && (
+                      <button
+                        onClick={() => handleRemoveCoin(coin.name)}
+                        disabled={savingCoins}
+                        style={{ background: 'transparent', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: '0.25rem' }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                    <div style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: coin.color, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', flexShrink: 0 }}>
+                      {coin.icon}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: '600' }}>{coin.name}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{coin.symbol}</div>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: '600' }}>${coin.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</div>
+                    <div style={{ fontSize: '0.875rem', color: coin.change24h >= 0 ? 'var(--success)' : 'var(--danger)' }}>
+                      {coin.change24h > 0 ? '+' : ''}{Number(coin.change24h).toFixed(2)}%
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </DashboardCard>
+
+        {/* Charts */}
+        {showCharts && (
+          <DashboardCard title="Market Charts" section="charts">
+            <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: '340px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                  <span style={{
+                    fontSize: '0.7rem',
+                    padding: '0.15rem 0.4rem',
+                    borderRadius: '0.25rem',
+                    backgroundColor: data.chartSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.chartSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                    color: data.chartSource === 'live' ? 'var(--success)' : data.chartSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                    display: 'inline-block',
+                    width: 'fit-content'
+                  }}>
+                    {data.chartSource === 'live' ? 'Live chart' : data.chartSource === 'cache' ? 'Cached chart' : 'Fallback demo chart'}
+                  </span>
+                  {data.chartError && <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.chartError}</span>}
+                </div>
+                
+                <select 
+                  value={data.selectedChartAsset || ''} 
+                  onChange={handleChartAssetChange}
+                  disabled={chartLoading}
+                  style={{
+                    padding: '0.4rem 0.75rem',
+                    borderRadius: '0.5rem',
+                    backgroundColor: 'var(--bg-dark)',
+                    border: '1px solid var(--border)',
+                    color: 'var(--text-main)',
+                    fontSize: '0.875rem',
+                    cursor: chartLoading ? 'wait' : 'pointer'
+                  }}
+                >
+                  {data.meta.selectedAssets.map(asset => (
+                    <option key={asset} value={asset}>{asset}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ flex: 1, width: '100%', minHeight: '250px', position: 'relative' }}>
+                {chartLoading && (
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.5)', zIndex: 10 }}>
+                    Loading...
+                  </div>
+                )}
+                {data.chartData && data.chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={data.chartData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis 
+                        dataKey="time" 
+                        stroke="var(--text-muted)" 
+                        fontSize={10} 
+                        tickLine={false}
+                        axisLine={false}
+                        minTickGap={30}
+                      />
+                      <YAxis 
+                        domain={['auto', 'auto']} 
+                        stroke="var(--text-muted)" 
+                        fontSize={10}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(val) => `$${val.toLocaleString()}`}
+                      />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: 'var(--bg-dark)', border: '1px solid var(--border)', borderRadius: '0.5rem' }}
+                        itemStyle={{ color: 'var(--primary)' }}
+                        formatter={(value) => [`$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`, 'Price']}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="price" 
+                        stroke="var(--primary)" 
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, fill: 'var(--primary)', stroke: 'var(--bg-card)' }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+                    No chart data available
+                  </div>
+                )}
+              </div>
+            </div>
+          </DashboardCard>
+        )}
+
+        {/* AI Insight */}
+        {showAI && (
+          <DashboardCard title="AI Insight of the Day" section="ai_insight" itemId={data.aiInsight?.id}>
+            <div style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              height: '100%', 
+              justifyContent: 'center', 
+              padding: '1rem 0',
+              maxHeight: '340px',
+              overflowY: 'auto',
+              paddingRight: '4px'
+            }}>
+              {/* aiSource badge */}
+              <div style={{ marginBottom: '0.75rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem' }}>
+                <span style={{
+                  fontSize: '0.7rem',
+                  padding: '0.15rem 0.4rem',
+                  borderRadius: '0.25rem',
+                  backgroundColor: data.aiSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.aiSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                  color: data.aiSource === 'live' ? 'var(--success)' : data.aiSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                  display: 'inline-block',
+                }}>
+                  {data.aiSource === 'live' ? 'Live AI insight' : data.aiSource === 'cache' ? 'Cached AI insight' : 'Fallback demo insight'}
+                </span>
+                {data.aiError && (
+                  <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.aiError}</span>
+                )}
+              </div>
+              <div style={{ fontSize: '3rem', textAlign: 'center', marginBottom: '1rem' }}>{data.aiInsight?.emoji}</div>
+              <h4 style={{ textAlign: 'center', color: 'var(--primary)', marginBottom: '0.5rem' }}>{data.aiInsight?.title}</h4>
+              <p style={{ textAlign: 'center', color: 'var(--text-main)', fontSize: '1.1rem', fontStyle: 'italic', lineHeight: '1.6' }}>
+                "{data.aiInsight?.body}"
+              </p>
+              <div style={{ marginTop: '1.5rem', textAlign: 'center' }}>
+                <span className="badge">Confidence: {data.aiInsight?.confidence}</span>
+              </div>
+            </div>
+          </DashboardCard>
+        )}
+
+        {/* Market News */}
+        {showNews && (
+          <DashboardCard title="Curated News" section="market_news">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <span style={{ 
+                  fontSize: '0.7rem', 
+                  padding: '0.15rem 0.4rem', 
+                  borderRadius: '0.25rem', 
+                  backgroundColor: data.newsSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.newsSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                  color: data.newsSource === 'live' ? 'var(--success)' : data.newsSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                  display: 'inline-block',
+                  width: 'fit-content'
+                }}>
+                  {data.newsSource === 'live' ? 'Live news' : data.newsSource === 'cache' ? 'Cached live news' : 'Fallback demo news'}
+                </span>
+                {data.newsError && <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.newsError}</span>}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {data.marketNews?.slice(0, 3).map(news => (
+                <div key={news.id} style={{ borderBottom: '1px solid var(--border)', paddingBottom: '1rem', lastChild: { borderBottom: 'none', paddingBottom: 0 } }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--primary)', fontWeight: '600' }}>{news.source}</span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{news.time}</span>
+                  </div>
+                  <h4 style={{ margin: '0 0 0.5rem 0', fontSize: '1rem' }}>
+                    {news.url ? (
+                      <a href={news.url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>
+                        {news.title}
+                      </a>
+                    ) : (
+                      news.title
+                    )}
+                  </h4>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', margin: 0, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    {news.summary}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </DashboardCard>
+        )}
+
+        {/* Meme */}
+        {showMeme && (
+          <DashboardCard title="Crypto Culture" section="meme" itemId={data.meme?.id}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+
+              {/* memeSource badge + error */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                <span style={{
+                  fontSize: '0.7rem',
+                  padding: '0.15rem 0.4rem',
+                  borderRadius: '0.25rem',
+                  backgroundColor: data.memeSource === 'live' ? 'rgba(34, 197, 94, 0.1)' : data.memeSource === 'cache' ? 'rgba(59, 130, 246, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                  color: data.memeSource === 'live' ? 'var(--success)' : data.memeSource === 'cache' ? '#3b82f6' : 'var(--danger)',
+                  display: 'inline-block',
+                  width: 'fit-content',
+                }}>
+                  {data.memeSource === 'live' ? 'Live crypto meme' : data.memeSource === 'cache' ? 'Cached crypto meme' : 'Fallback demo crypto meme'}
+                </span>
+                {data.memeError && (
+                  <span style={{ fontSize: '0.7rem', color: 'var(--danger)' }}>{data.memeError}</span>
+                )}
+              </div>
+
+              {/* Live / cached meme — show real image */}
+              {data.meme?.imageUrl ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem', padding: '0.5rem 0' }}>
+                  <a href={data.meme.url ?? '#'} target="_blank" rel="noopener noreferrer" style={{ display: 'block', width: '100%' }}>
+                    <img
+                      src={data.meme.imageUrl}
+                      alt={data.meme.title}
+                      style={{
+                        width: '100%',
+                        maxHeight: '260px',
+                        objectFit: 'contain',
+                        borderRadius: '0.5rem',
+                        display: 'block',
+                      }}
+                      onError={(e) => { e.target.style.display = 'none'; }}
+                    />
+                  </a>
+                  <p style={{ fontSize: '0.9rem', fontWeight: '600', textAlign: 'center', margin: 0 }}>
+                    {data.meme.url ? (
+                      <a href={data.meme.url} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>
+                        {data.meme.title}
+                      </a>
+                    ) : data.meme.title}
+                  </p>
+                  {data.meme.subreddit && (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      r/{data.meme.subreddit} · {data.meme.source}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                /* Static fallback meme — emoji + text layout */
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '0.5rem 0', gap: '0.75rem' }}>
+                  <div style={{ fontSize: '4rem' }}>{data.meme?.emoji}</div>
+                  <p style={{ fontSize: '1.1rem', fontWeight: 'bold', textAlign: 'center', margin: 0 }}>
+                    {data.meme?.text}
+                  </p>
+                  <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', textAlign: 'center', margin: 0 }}>
+                    {data.meme?.subtext}
+                  </p>
+                  <span className="badge">{data.meme?.label}</span>
+                </div>
+              )}
+
+            </div>
+          </DashboardCard>
+        )}
+
+      </div>
+
+      {showNone && (
+        <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
+          <p style={{ fontSize: '1.1rem' }}>You haven't selected any optional content.</p>
+          <p>You can customize your content preferences from onboarding/settings.</p>
+        </div>
+      )}
+
+      {/* Educational disclaimer */}
+      <p style={{
+        marginTop: '2.5rem',
+        textAlign: 'center',
+        fontSize: '0.75rem',
+        color: 'var(--text-muted)',
+        letterSpacing: '0.01em',
+        padding: '0 1rem',
+      }}>
+        ⚠️ This dashboard is for educational purposes only and is not financial advice.
+      </p>
+    </div>
+  );
+}
