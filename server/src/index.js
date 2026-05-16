@@ -18,27 +18,44 @@ const allowedOrigins = [
   'http://localhost:5174',
   'http://localhost:3000',
 ];
+
 if (process.env.CLIENT_URL) {
   allowedOrigins.push(process.env.CLIENT_URL);
 }
 
 // Middleware
-app.use(cors({
-  origin: allowedOrigins,
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: allowedOrigins,
+    credentials: true,
+  })
+);
+
 app.use(express.json());
+
+// Root health check
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'AI Crypto Advisor Backend',
+    message: 'Backend is running 🚀',
+  });
+});
+
+// API health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'AI Crypto Advisor API',
+    message: 'API is running 🚀',
+  });
+});
 
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/feedback', feedbackRoutes);
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'AI Crypto Advisor API is running 🚀' });
-});
 
 // 404 handler
 app.use((req, res) => {
@@ -52,5 +69,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
