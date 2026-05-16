@@ -93,6 +93,13 @@ export const api = {
     return res.json();
   },
 
+  // Fetch crypto meme separately (non-blocking)
+  getMeme: async () => {
+    const res = await fetch(`${API_URL}/dashboard/meme`, { headers: getHeaders() });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+
   // Feedback
   submitFeedback: async (feedback) => {
     const res = await fetch(`${API_URL}/feedback`, {

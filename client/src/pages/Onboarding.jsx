@@ -8,7 +8,7 @@ const ASSET_OPTIONS = [
   'Polygon', 'Binance Coin', 'XRP', 'Litecoin', 'Avalanche'
 ];
 const INVESTOR_OPTIONS = ['HODLer', 'Day Trader', 'NFT Collector', 'DeFi Explorer', 'Beginner'];
-const CONTENT_OPTIONS = ['Market News', 'Charts', 'Social', 'Fun', 'AI Insights'];
+const CONTENT_OPTIONS = ['Market News', 'Charts', 'Fun', 'AI Insights'];
 
 export default function Onboarding() {
   const { user, setUser } = useAuth();

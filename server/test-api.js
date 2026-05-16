@@ -299,6 +299,23 @@ async function runTests() {
     }
     console.log('   ✅ AI endpoint skipped when AI Insights not selected');
 
+    // 5f. Meme endpoint (new non-blocking endpoint)
+    console.log('5f. Testing GET /api/dashboard/meme...');
+    const memeRes = await fetch(`${API_URL}/dashboard/meme`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const memeData = await memeRes.json();
+    if (!memeRes.ok) throw new Error('Meme route failed: ' + JSON.stringify(memeData));
+    
+    const validMemeEndpointSources = ['live', 'cache', 'fallback', 'skipped'];
+    if (!validMemeEndpointSources.includes(memeData.memeSource)) {
+      throw new Error(`Meme endpoint returned unexpected memeSource: ${memeData.memeSource}`);
+    }
+    if (memeData.memeSource !== 'skipped' && (!memeData.meme || typeof memeData.meme !== 'object')) {
+      throw new Error('Meme endpoint missing meme object: ' + JSON.stringify(memeData));
+    }
+    console.log(`   ✅ Meme endpoint load (memeSource: ${memeData.memeSource})`);
+
     // 6. Feedback
     console.log('6. Testing POST /api/feedback...');
     res = await fetch(`${API_URL}/feedback`, {

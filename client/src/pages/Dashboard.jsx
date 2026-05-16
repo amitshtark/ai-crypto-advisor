@@ -56,8 +56,15 @@ export default function Dashboard() {
     prices: false,
     news: false,
     chart: false,
+    meme: false,
   });
   const sectionsHydratedRef = useRef(false);
+  
+  // Retry tracking: { section: { count, timerId } }
+  const retryCountersRef = useRef({ news: 0, ai: 0, chart: 0, meme: 0 });
+  const retryTimersRef = useRef({ news: null, ai: null, chart: null, meme: null });
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 30000; // 30 seconds
 
   const fetchDashboard = async () => {
     try {
@@ -70,6 +77,15 @@ export default function Dashboard() {
       setLoading(false);
     }
   };
+
+  // Cleanup retry timers on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(retryTimersRef.current).forEach(timerId => {
+        if (timerId) clearTimeout(timerId);
+      });
+    };
+  }, []);
 
   // Fetch AI insight separately (non-blocking) if selected
   const fetchAIInsight = async () => {
@@ -84,10 +100,133 @@ export default function Dashboard() {
         aiUpdatedAt: aiData.aiUpdatedAt,
         aiError: aiData.aiError,
       }));
+      // Reset retry counter on success
+      if (aiData.aiSource === 'live' || aiData.aiSource === 'cache') {
+        retryCountersRef.current.ai = 0;
+      }
     } catch (err) {
       console.error('Failed to fetch AI insight:', err);
       // Keep the pending state if fetch fails
     }
+  };
+
+  // Retry handler for AI — retries only the AI endpoint
+  const scheduleAIRetry = () => {
+    if (retryCountersRef.current.ai >= MAX_RETRIES) return;
+    if (retryTimersRef.current.ai) clearTimeout(retryTimersRef.current.ai);
+    
+    retryCountersRef.current.ai += 1;
+    retryTimersRef.current.ai = setTimeout(() => {
+      console.log(`[Retry] AI attempt ${retryCountersRef.current.ai}/${MAX_RETRIES}`);
+      fetchAIInsight();
+    }, RETRY_DELAY_MS);
+  };
+
+  // Retry handler for News
+  const fetchNewsWithRetry = async () => {
+    if (!data?.meta?.contentTypes?.includes('Market News')) return;
+    
+    try {
+      const newsData = await api.getNews();
+      setData((prev) => ({
+        ...prev,
+        marketNews: newsData.marketNews ?? prev.marketNews,
+        newsSource: newsData.newsSource ?? prev.newsSource,
+        newsUpdatedAt: newsData.newsUpdatedAt,
+        newsError: newsData.newsError ?? null,
+      }));
+      // Reset retry counter on success
+      if (newsData.newsSource === 'live' || newsData.newsSource === 'cache') {
+        retryCountersRef.current.news = 0;
+      } else if (newsData.newsSource === 'fallback') {
+        scheduleNewsRetry();
+      }
+    } catch (err) {
+      console.error('Failed to fetch market news:', err);
+      scheduleNewsRetry();
+    }
+  };
+
+  const scheduleNewsRetry = () => {
+    if (retryCountersRef.current.news >= MAX_RETRIES) return;
+    if (retryTimersRef.current.news) clearTimeout(retryTimersRef.current.news);
+    
+    retryCountersRef.current.news += 1;
+    retryTimersRef.current.news = setTimeout(() => {
+      console.log(`[Retry] News attempt ${retryCountersRef.current.news}/${MAX_RETRIES}`);
+      fetchNewsWithRetry();
+    }, RETRY_DELAY_MS);
+  };
+
+  // Retry handler for Chart
+  const fetchChartWithRetry = async (asset) => {
+    try {
+      const chartRes = await api.getChart(asset);
+      setData((prev) => ({
+        ...prev,
+        selectedChartAsset: chartRes.selectedAsset,
+        chartData: chartRes.chartData,
+        chartSource: chartRes.chartSource,
+        chartUpdatedAt: chartRes.chartUpdatedAt,
+        chartError: chartRes.chartError
+      }));
+      // Reset retry counter on success
+      if (chartRes.chartSource === 'live' || chartRes.chartSource === 'cache') {
+        retryCountersRef.current.chart = 0;
+      } else if (chartRes.chartSource === 'fallback') {
+        scheduleChartRetry(asset);
+      }
+    } catch (err) {
+      console.error('Failed to fetch chart data:', err);
+      scheduleChartRetry(asset);
+    }
+  };
+
+  const scheduleChartRetry = (asset) => {
+    if (retryCountersRef.current.chart >= MAX_RETRIES) return;
+    if (retryTimersRef.current.chart) clearTimeout(retryTimersRef.current.chart);
+    
+    retryCountersRef.current.chart += 1;
+    retryTimersRef.current.chart = setTimeout(() => {
+      console.log(`[Retry] Chart attempt ${retryCountersRef.current.chart}/${MAX_RETRIES}`);
+      fetchChartWithRetry(asset);
+    }, RETRY_DELAY_MS);
+  };
+
+  // Retry handler for Meme
+  const fetchMemeWithRetry = async () => {
+    if (!data?.meta?.contentTypes?.includes('Fun')) return;
+    
+    try {
+      const memeData = await api.getMeme();
+      setData((prev) => ({
+        ...prev,
+        meme: memeData.meme ?? prev.meme,
+        memeSource: memeData.memeSource ?? prev.memeSource,
+        memeUpdatedAt: memeData.memeUpdatedAt,
+        memeError: memeData.memeError ?? null,
+      }));
+      // Reset retry counter on success
+      if (memeData.memeSource === 'live' || memeData.memeSource === 'cache') {
+        retryCountersRef.current.meme = 0;
+      } else if (memeData.memeSource === 'fallback') {
+        scheduleMemeRetry();
+      }
+    } catch (err) {
+      console.error('Failed to fetch meme:', err);
+      scheduleMemeRetry();
+    }
+  };
+
+  const scheduleMemeRetry = () => {
+    if (retryCountersRef.current.meme >= MAX_RETRIES) return;
+    if (retryTimersRef.current.meme) clearTimeout(retryTimersRef.current.meme);
+    
+    retryCountersRef.current.meme += 1;
+    retryTimersRef.current.meme = setTimeout(() => {
+      console.log(`[Retry] Meme attempt ${retryCountersRef.current.meme}/${MAX_RETRIES}`);
+      fetchMemeWithRetry();
+    }, RETRY_DELAY_MS);
   };
 
   useEffect(() => {
@@ -100,6 +239,13 @@ export default function Dashboard() {
       fetchAIInsight();
     }
   }, [data?.aiSource, data?.meta?.contentTypes]);
+
+  // Schedule retry for AI if it's fallback
+  useEffect(() => {
+    if (data?.aiSource === 'fallback') {
+      scheduleAIRetry();
+    }
+  }, [data?.aiSource]);
 
   // Hydrate live sections in the background (non-blocking)
   useEffect(() => {
@@ -132,21 +278,7 @@ export default function Dashboard() {
       if (!contentTypes.includes('Market News')) return;
       setSectionLoading((s) => ({ ...s, news: true }));
       try {
-        const newsData = await api.getNews();
-        setData((prev) => ({
-          ...prev,
-          marketNews: newsData.marketNews ?? prev.marketNews,
-          newsSource: newsData.newsSource ?? prev.newsSource,
-          newsUpdatedAt: newsData.newsUpdatedAt,
-          newsError: newsData.newsError ?? null,
-        }));
-      } catch (err) {
-        console.error('Failed to fetch market news:', err);
-        setData((prev) => ({
-          ...prev,
-          newsSource: 'fallback',
-          newsError: 'Live news unavailable, showing demo news.',
-        }));
+        await fetchNewsWithRetry();
       } finally {
         setSectionLoading((s) => ({ ...s, news: false }));
       }
@@ -157,25 +289,26 @@ export default function Dashboard() {
       const asset = data.selectedChartAsset || assets[0];
       setSectionLoading((s) => ({ ...s, chart: true }));
       try {
-        const chartRes = await api.getChart(asset);
-        setData((prev) => ({
-          ...prev,
-          selectedChartAsset: chartRes.selectedAsset,
-          chartData: chartRes.chartData,
-          chartSource: chartRes.chartSource,
-          chartUpdatedAt: chartRes.chartUpdatedAt,
-          chartError: chartRes.chartError,
-        }));
-      } catch (err) {
-        console.error('Failed to refresh chart:', err);
+        await fetchChartWithRetry(asset);
       } finally {
         setSectionLoading((s) => ({ ...s, chart: false }));
+      }
+    };
+
+    const hydrateMeme = async () => {
+      if (!contentTypes.includes('Fun')) return;
+      setSectionLoading((s) => ({ ...s, meme: true }));
+      try {
+        await fetchMemeWithRetry();
+      } finally {
+        setSectionLoading((s) => ({ ...s, meme: false }));
       }
     };
 
     hydratePrices();
     hydrateNews();
     hydrateChart();
+    hydrateMeme();
   }, [data]);
 
   const [toast, setToast] = useState('');
@@ -240,19 +373,10 @@ export default function Dashboard() {
     if (newAsset === data.selectedChartAsset) return;
 
     setChartLoading(true);
+    // Reset retry counter for new asset
+    retryCountersRef.current.chart = 0;
     try {
-      const chartRes = await api.getChart(newAsset);
-      setData(prev => ({
-        ...prev,
-        selectedChartAsset: chartRes.selectedAsset,
-        chartData: chartRes.chartData,
-        chartSource: chartRes.chartSource,
-        chartUpdatedAt: chartRes.chartUpdatedAt,
-        chartError: chartRes.chartError
-      }));
-    } catch (err) {
-      console.error(err);
-      showToast('Failed to fetch chart data');
+      await fetchChartWithRetry(newAsset);
     } finally {
       setChartLoading(false);
     }

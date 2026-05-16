@@ -10,6 +10,7 @@ import { fetchLivePrices } from '../services/coinGecko.service.js';
 import { fetchNewsData } from '../services/newsData.service.js';
 import { fetchAIInsight } from '../services/aiInsight.service.js';
 import { fetchChartData, getFallbackChartData } from '../services/coinChart.service.js';
+import { fetchCryptoMeme } from '../services/meme.service.js';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -315,6 +316,64 @@ router.get('/chart', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Chart route error:', err);
     res.status(500).json({ error: 'Failed to fetch chart' });
+  }
+});
+
+// GET /api/dashboard/meme
+// Lightweight route — fetches crypto meme separately (non-blocking)
+router.get('/meme', authenticateToken, async (req, res) => {
+  const memeStartTime = Date.now();
+
+  try {
+    const preferences = await prisma.preference.findUnique({
+      where: { userId: req.user.id },
+    });
+
+    if (!preferences) {
+      return res.json({
+        memeSource: 'fallback',
+        meme: buildDashboardContent(null).meme,
+        memeError: 'Preferences not found, showing demo meme.',
+      });
+    }
+
+    const contentTypes = JSON.parse(preferences.contentTypes);
+
+    if (!contentTypes.includes('Fun')) {
+      return res.json({
+        memeSource: 'skipped',
+        memeError: 'Fun content is not enabled for this user.',
+      });
+    }
+
+    try {
+      const memeData = await fetchCryptoMeme();
+      const duration = Date.now() - memeStartTime;
+      console.log(`[dashboard-meme] source=${memeData.source} duration=${duration}ms`);
+
+      res.json({
+        memeSource: memeData.source,
+        meme: memeData.meme,
+        memeUpdatedAt: memeData.timestamp,
+      });
+    } catch (err) {
+      const duration = Date.now() - memeStartTime;
+      console.warn(`⚠️ [dashboard-meme] source=fallback duration=${duration}ms | error: ${err.message}`);
+
+      res.json({
+        memeSource: 'fallback',
+        meme: buildDashboardContent({
+          assets: JSON.parse(preferences.assets),
+          investorType: preferences.investorType,
+          contentTypes,
+        }).meme,
+        memeError: 'Live crypto meme unavailable, showing demo meme.',
+        memeUpdatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (err) {
+    console.error('Meme route error:', err);
+    res.status(500).json({ error: 'Failed to fetch crypto meme' });
   }
 });
 
