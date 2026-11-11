@@ -160,37 +160,15 @@ export async function fetchAIInsight({ assets, investorType, contentTypes, coinP
   const usedModel = response.data?.model ?? model;
   console.log(`[OpenRouter] Response received | model: ${usedModel} | status: ${response.status}`);
 
-  // Some free models are reasoning models (e.g. liquid/lfm-3-1.7b:free) that may put their
-  // answer inside `reasoning` instead of `content` when they run out of tokens mid-think.
-  // Try content first; fall back to extracting the final answer from the reasoning trace.
-  const rawContent = response.data?.choices?.[0]?.message?.content;
-  const rawReasoning = response.data?.choices?.[0]?.message?.reasoning;
+  const content = response.data?.choices?.[0]?.message?.content?.trim() || null;
 
-  let content = rawContent?.trim() || null;
+  // Validate the response looks like a real insight (not a fragment from a reasoning model
+  // that ran out of tokens). A valid insight must be at least 60 chars and end with punctuation.
+  const looksComplete = content && content.length >= 60 && /[.!?]$/.test(content);
 
-  if (!content && rawReasoning) {
-    // The model finished reasoning and drafted the answer inside the reasoning block.
-    // Extract everything after the last standalone quoted block or the last paragraph.
-    const reasoningText = rawReasoning.trim();
-    // Look for a final quoted answer like "Bitcoin's capped supply..."
-    const quotedMatch = reasoningText.match(/"([^"]{40,})"[^"]*$/s);
-    if (quotedMatch) {
-      content = quotedMatch[1].trim();
-      console.warn(`[OpenRouter] content was null — extracted answer from reasoning quote | model: ${usedModel}`);
-    } else {
-      // Fall back to the last non-empty paragraph of the reasoning trace
-      const paragraphs = reasoningText.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
-      const lastPara = paragraphs[paragraphs.length - 1];
-      if (lastPara && lastPara.length > 40) {
-        content = lastPara;
-        console.warn(`[OpenRouter] content was null — extracted last paragraph from reasoning | model: ${usedModel}`);
-      }
-    }
-  }
-
-  if (!content) {
-    console.error(`[OpenRouter] Empty content in response | model: ${usedModel}`);
-    throw new Error('OpenRouter returned an empty response');
+  if (!looksComplete) {
+    console.error(`[OpenRouter] Invalid/incomplete content in response | model: ${usedModel} | content: "${content?.substring(0, 80) ?? 'null'}"`);
+    throw new Error('OpenRouter returned an incomplete response');
   }
 
   const aiInsight = {
